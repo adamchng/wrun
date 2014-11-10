@@ -1,0 +1,117 @@
+#!/usr/bin/perl
+
+# Configuration File is in webcoll.pm
+
+BEGIN { push(@INC,"/usr/local/bin"); }
+
+BEGIN { 
+  while(@ARGV) {
+	if ($ARGV[0] eq '-c') {
+	  shift @ARGV;
+	  $ENV{WCOLL} = shift @ARGV;
+	} elsif ($ARGV[0] eq '-p') {
+	  shift @ARGV;
+	  $ENV{WPREFIX} = shift @ARGV;
+	} else { last; }
+  }
+}
+
+use webcoll;
+
+@EXECPATH = ('/usr/local/bin','/usr/bin');
+$scp = &find_executable('scp');
+$ssh = &find_executable('ssh');
+$user = 'root';
+$parallel = 1;
+$parallel_count = 5;
+$verbose = 0;
+$verbose_ssh = '';
+
+while (@ARGV) {
+  if ($ARGV[0] eq '--serial') {
+	$parallel = 0;
+	shift @ARGV;
+  } if ($ARGV[0] eq '--count') {
+	shift @ARGV;
+	$parallel_count = shift @ARGV;
+  } elsif ($ARGV[0] eq '--user') {
+	shift @ARGV;
+	$user = shift @ARGV;
+  } elsif ($ARGV[0] eq '--verbose') {
+	shift @ARGV;
+	$verbose = 1;
+  } elsif ($ARGV[0] eq '--verbose-ssh') {
+	shift @ARGV;
+	$verbose_ssh = '-v';
+  } else {
+	last;
+  }
+}
+
+$ENV{'SHELL'} = '/bin/csh';
+
+if ($verbose) {
+  print "NODES: \@webcoll::wcoll\n";
+}
+
+my $count = 0;
+foreach $node (@webcoll::wcoll) {
+  my $cmd;
+
+  if ($0 =~ /wcp/) {
+	$cmd = "$scp $verbose_ssh -c blowfish @ARGV[0..($#ARGV-1)] $user\@$node:$ARGV[$#ARGV]";
+  } elsif($0 =~ /wrun/) {
+	$cmd = "$ssh -x $verbose_ssh -c blowfish -l $user $node @ARGV";
+  } else {
+	die "unknown command: $0";
+  }
+
+  $real_cmd = "$cmd 2>&1 | perl -p -e '\$_ = \"$node: \".\$_;'";
+
+  if ($verbose) { print STDERR $real_cmd,"\n"; }
+
+  if ($parallel && ((++$count % $parallel_count) != 0)) {
+	my $rv = fork();
+	if (!(defined $rv)) {
+	  die "Could not fork for $node";
+	} elsif (!$rv) {
+	  exec $real_cmd;
+	  die "Could not exec <<$real_cmd>>";
+	}
+  } else {
+	system $real_cmd;
+	if ($@) {
+	  warn "Could not run <<$real_cmd>>: $!";
+	}
+  }
+}
+
+use IPC::Open3;
+
+sub run_it {
+  my $node = shift;
+  my $cmd = shift;
+
+  
+  unless (open3(main::IN,main::OUT,main::OUT,"$cmd")) {
+	warn "Cannot set up IPC for command to $node";
+	return;
+  }
+  close(main::IN);
+  select(STDOUT); $| = 1;
+  while (<main::OUT>) {
+	print "$node: $_";
+  }
+}
+
+sub find_executable {
+	my $prog = shift;
+
+	my $d;
+	foreach $d (@EXECPATH) {
+		if (-x "$d/$prog") {
+			return "$d/$prog";
+		}
+	}
+	die "Cannot find $prog in @EXECPATH";
+}
